@@ -1,0 +1,6 @@
+.vscode
+cmake
+build
+log.txt
+bin
+lib
