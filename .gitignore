@@ -1,6 +1,7 @@
 .vscode
 cmake
 build
-log.txt
 bin
 lib
+*.txt
+!CMakeLists.txt

@@ -1,7 +1,10 @@
 #include "./log.h"
+#include "./config.h"
 #include <cstdarg>
 #include <functional>
+#include <iomanip>
 #include <iostream>
+#include <set>
 
 namespace sylar {
 
@@ -22,6 +25,34 @@ const char *LogLevel::ToString(LogLevel::Level level) {
         return "UNKNOW";
         break;
     }
+}
+
+LogLevel::Level LogLevel::FromString(const std::string &str) {
+    if (str.size() < 4) return LogLevel::Unknow;
+    std::string nstr(str.size(), 0);
+    std::transform(str.begin(), str.end(), nstr.begin(), ::tolower);
+    nstr.front() = ::toupper(nstr.front());
+#define XX(name) \
+    if (nstr == #name) { \
+        return LogLevel::name; \
+    }
+
+    XX(Debug);
+    XX(Info);
+    XX(Warn);
+    XX(Error);
+    XX(Fatal);
+    return LogLevel::Unknow;
+
+#undef XX
+}
+
+void to_json(nlohmann::json &j, const LogLevel::Level &v) {
+    j = sylar::LogLevel::ToString(v);
+}
+
+void from_json(const nlohmann::json &j, LogLevel::Level &v) {
+    v = sylar::LogLevel::FromString(j.get<std::string>());
 }
 
 LogEventWrap::LogEventWrap(LogEvent::ptr e)
@@ -81,7 +112,7 @@ class NameFormatItem : public LogFormatter::FormatItem {
 public:
     NameFormatItem(const std::string &str = "") {}
     void format(std::ostream &os, std::shared_ptr<Logger> logger, LogLevel::Level level, LogEvent::ptr event) override {
-        os << logger->getName();
+        os << event->getLogger()->getName();
     }
 };
 
@@ -178,6 +209,18 @@ Logger::Logger(const std::string &name)
     m_formatter.reset(new LogFormatter("%d{%Y-%m-%d %H:%M:%S}%T%t%T%F%T[%p]%T[%c]%T%f:%l%T%m%n"));
 }
 
+void Logger::setFormatter(const std::string &val) {
+    m_formatter.reset(new LogFormatter(val));
+}
+
+void Logger::setFormatter(LogFormatter::ptr val) {
+    m_formatter = val;
+}
+
+LogFormatter::ptr Logger::getFormatter() const {
+    return m_formatter;
+}
+
 void Logger::addAppender(LogAppender::ptr appender) {
     if (!appender->getFormatter()) {
         appender->setFormatter(m_formatter);
@@ -194,11 +237,19 @@ void Logger::delAppender(LogAppender::ptr appender) {
     }
 }
 
+void Logger::clearAppender() {
+    m_appenders.clear();
+}
+
 void Logger::log(LogLevel::Level level, LogEvent::ptr event) {
     if (level >= m_level) {
         auto self = shared_from_this();
-        for (auto &i : m_appenders) {
-            i->log(self, level, event);
+        if (!m_appenders.empty()) {
+            for (auto &i : m_appenders) {
+                i->log(self, level, event);
+            }
+        } else if (m_root) {
+            m_root->log(level, event);
         }
     }
 }
@@ -355,6 +406,7 @@ void LogFormatter::init() {
             auto it = s_format_items.find(std::get<0>(i));
             if (it == s_format_items.end()) {
                 m_items.push_back(FormatItem::ptr(new StringFormatItem("<<error_format %" + std::get<0>(i) + ">>")));
+                m_error = true;
             } else {
                 m_items.push_back(it->second(std::get<1>(i)));
             }
@@ -367,14 +419,168 @@ void LogFormatter::init() {
 LogManager::LogManager() {
     m_root.reset(new Logger);
     m_root->addAppender(LogAppender::ptr(new StdoutLogAppender));
+    m_loggers["root"] = m_root;
+    init();
+}
+
+std::shared_ptr<LogManager> LogManager::GetInstance() {
+    static std::shared_ptr<LogManager> self(new LogManager);
+    return self;
 }
 
 Logger::ptr LogManager::getLogger(const std::string &name) {
-    auto it = m_logger.find(name);
-    return it == m_logger.end() ? m_root : it->second;
+    auto it = m_loggers.find(name);
+    if (it != m_loggers.end()) return it->second;
+    Logger::ptr logger(new Logger(name));
+    logger->m_root = m_root;
+    m_loggers[name] = logger;
+    return logger;
 }
 
+struct LogAppenderDefine {
+    int type = 2; // 1 File 2 Stdout
+    LogLevel::Level level = LogLevel::Unknow;
+    std::string formatter;
+    std::string file;
+
+    bool operator==(const LogAppenderDefine &oth) const {
+        return type == oth.type && level == oth.level && formatter == oth.formatter && file == oth.file;
+    }
+};
+
+struct LogDefine {
+    std::string name;
+    LogLevel::Level level = LogLevel::Unknow;
+    std::string formatter;
+    std::vector<LogAppenderDefine> appenders;
+
+    bool operator==(const LogDefine &oth) const {
+        return name == oth.name && level == oth.level && formatter == oth.formatter && appenders == oth.appenders;
+    }
+    bool operator<(const LogDefine &oth) const {
+        return name < oth.name;
+    }
+};
+
+void to_json(nlohmann::json &j, const LogAppenderDefine &v) {
+    j["type"] = v.type == 1 ? "FileLogAppender" : "StdoutLogAppender";
+    if (v.level != LogLevel::Unknow) j["level"] = v.level;
+    if (!v.formatter.empty()) j["formatter"] = v.formatter;
+    if (!v.file.empty()) j["file"] = v.file;
+}
+void to_json(nlohmann::json &j, const LogDefine &v) {
+    j["name"] = v.name;
+    if (v.level != LogLevel::Unknow) j["level"] = v.level;
+    if (!v.formatter.empty()) j["formatter"] = v.formatter;
+    if (!v.appenders.empty()) j["appenders"] = v.appenders;
+}
+
+#define XX(j, v, key, is_type, prefix) \
+    if (j.contains(#key)) { \
+        if (j[#key].is_type()) \
+            j[#key].get_to(v.key); \
+        else \
+            SYLAR_LOG_ERROR(SYLAR_LOG_ROOT()) << "config exception: " #prefix " " #key "'s type should " #is_type; \
+    }
+
+void from_json(const nlohmann::json &j, LogAppenderDefine &v) {
+    if (j.contains("type")) {
+        if (j["type"].is_string()) {
+            std::string str = j["type"].get<std::string>();
+            if (str == "FileLogAppender")
+                v.type = 1;
+            else if (str == "StdoutLogAppender")
+                v.type = 2;
+        } else
+            SYLAR_LOG_ERROR(SYLAR_LOG_ROOT()) << "config exception: Appender type should be string";
+    }
+    XX(j, v, level, is_string, Appender);
+    XX(j, v, formatter, is_string, Appender);
+    XX(j, v, file, is_string, Appender);
+}
+
+void from_json(const nlohmann::json &j, LogDefine &v) {
+    XX(j, v, name, is_string, Logs);
+    XX(j, v, level, is_string, Logs);
+    XX(j, v, formatter, is_string, Logs);
+    XX(j, v, appenders, is_array, Logs);
+}
+
+#undef XX
+
+sylar::ConfigVar<std::set<LogDefine>>::ptr g_log_defines =
+    sylar::Config::Lookup("logs", std::set<LogDefine>(), "logs config");
+
+struct LogIniter {
+    LogIniter() {
+        g_log_defines->addListerner(0xF1E231, [](const std::set<LogDefine> &old_value, const std::set<LogDefine> &new_value) {
+            SYLAR_LOG_INFO(SYLAR_LOG_ROOT()) << "on_logger_conf_changed";
+            for (auto &i : new_value) {
+                // 新增或者修改 logger
+                auto logger = SYLAR_LOG_NAME(i.name);
+                logger->setLevel(i.level);
+                if (!i.formatter.empty()) logger->setFormatter(i.formatter);
+                logger->clearAppender();
+                for (auto &a : i.appenders) {
+                    sylar::LogAppender::ptr ap;
+                    if (a.type == 1)
+                        ap.reset(new sylar::FileLogAppender(a.file));
+                    else if (a.type == 2)
+                        ap.reset(new sylar::StdoutLogAppender);
+                    ap->setLevel(a.level);
+                    if (!a.formatter.empty()) {
+                        LogFormatter::ptr fmt(new LogFormatter(a.formatter));
+                        if (!fmt->is_Error()) {
+                            ap->setHasFormatter(fmt);
+                        } else {
+                            std::cout << "logger name=" << i.name << " formatter=" << a.formatter << " is invalid" << std::endl;
+                        }
+                    }
+                    logger->addAppender(ap);
+                }
+            }
+            for (auto &i : old_value) {
+                auto it = new_value.find(i);
+                if (it == new_value.end()) {
+                    // 删除 logger
+                    auto logger = SYLAR_LOG_NAME(i.name);
+                    logger->setLevel((LogLevel::Level)100);
+                    logger->clearAppender();
+                }
+            }
+        });
+    }
+};
+
+static LogIniter __log_init;
+
 void LogManager::init() {
+}
+
+std::string LogManager::toJsonString() const {
+    nlohmann::json j;
+    for (auto &l : m_loggers) {
+        LogDefine ld;
+        ld.name = l.first;
+        ld.level = l.second->m_level;
+        ld.formatter = l.second->m_formatter->getPattern();
+        for (auto &a : l.second->m_appenders) {
+            LogAppenderDefine lad;
+            if (typeid(*a) == typeid(FileLogAppender)) {
+                lad.type = 1;
+                lad.file = std::dynamic_pointer_cast<FileLogAppender>(a)->getFileName();
+            } else {
+                lad.type = 2;
+            }
+            lad.level = a->getLevel();
+            if (a->hasFormatter()) lad.formatter = a->getFormatter()->getPattern();
+            ld.appenders.push_back(lad);
+        }
+        j.push_back(ld);
+    }
+    std::stringstream ss;
+    ss << std::setw(4) << j;
+    return ss.str();
 }
 
 } // namespace sylar

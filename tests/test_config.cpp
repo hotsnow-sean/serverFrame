@@ -1,4 +1,5 @@
-#include "../sylar/config.hpp"
+#define SYLAR_DLL_USER
+#include "../sylar/config.h"
 #include "../sylar/log.h"
 #include <iostream>
 
@@ -138,9 +139,26 @@ void test_class() {
 #undef XX_PM
 }
 
+void test_log() {
+    std::shared_ptr<sylar::Logger> system_log = SYLAR_LOG_NAME("system");
+    SYLAR_LOG_INFO(system_log) << "hello system";
+    std::cout << sylar::LogManager::GetInstance()->toJsonString() << std::endl;
+    nlohmann::json root;
+    std::ifstream i("D:\\MyCode\\CPPSTUDY\\Hserver\\bin\\conf\\log.json");
+    i >> root;
+    sylar::Config::LoadFromJson(root);
+    i.close();
+    std::cout << "==================" << std::endl;
+    std::cout << sylar::LogManager::GetInstance()->toJsonString() << std::endl;
+    std::cout << "==================" << std::endl;
+    std::cout << root << std::endl;
+    SYLAR_LOG_INFO(system_log) << "hello system";
+}
+
 int main() {
     // test_config();
-    test_class();
+    // test_class();
+    test_log();
 
     return 0;
 }

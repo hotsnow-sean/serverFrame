@@ -22,7 +22,7 @@ int main() {
 
     SYLAR_LOG_FMT_ERROR(logger, "test macro fmt error %s", "aa");
 
-    auto l = sylar::LoggerMgr::GetInstance()->getLogger("xx");
+    auto l = sylar::LogManager::GetInstance()->getLogger("xx");
     SYLAR_LOG_INFO(l) << "xxx";
 
     return 0;

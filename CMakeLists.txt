@@ -7,6 +7,7 @@ set(CMAKE_CXX_FLAGS "$ENV{CXXFLAGS} -O0 -ggdb -std=c++11 -Wall -Wno-deprecated -
 set(LIB_SRC 
     sylar/log.cpp
     sylar/util.cpp
+    sylar/config.cpp
     )
 
 add_library(sylar SHARED ${LIB_SRC})

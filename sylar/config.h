@@ -100,8 +100,8 @@ public:
     template <typename T>
     static typename ConfigVar<T>::ptr Lookup(const std::string &name, const T &default_value,
                                              const std::string &description = "") {
-        auto it = s_datas.find(name);
-        if (it != s_datas.end()) {
+        auto it = GetDatas().find(name);
+        if (it != GetDatas().end()) {
             auto tmp = std::dynamic_pointer_cast<ConfigVar<T>>(it->second);
             if (tmp) {
                 SYLAR_LOG_INFO(SYLAR_LOG_ROOT()) << "Lookup name=" << name << " exists";
@@ -118,60 +118,23 @@ public:
             throw std::invalid_argument(name);
         }
         typename ConfigVar<T>::ptr v(new ConfigVar<T>(name, default_value, description));
-        s_datas[name] = v;
+        GetDatas().emplace(name, v);
         return v;
     }
     template <typename T>
     static typename ConfigVar<T>::ptr Lookup(const std::string &name) {
-        auto it = s_datas.find(name);
-        if (it == s_datas.end()) return nullptr;
+        auto it = GetDatas().find(name);
+        if (it == GetDatas().end()) return nullptr;
         return std::dynamic_pointer_cast<ConfigVar<T>>(it->second);
     }
 
     static ConfigVarBase::ptr LookupBase(const std::string &name);
-    static void LoadFromJson(const std::string &file);
+    static void LoadFromFile(const std::string &file);
+    static void LoadFromJson(const nlohmann::json& j);
 
 private:
-    static ConfigVarMap s_datas;
+    static ConfigVarMap &GetDatas();
 };
-
-ConfigVarBase::ptr Config::LookupBase(const std::string &name) {
-    auto it = s_datas.find(name);
-    return it == s_datas.end() ? nullptr : it->second;
-}
-
-static void ListAllMember(const std::string &prefix, const nlohmann::json &node,
-                          std::list<std::pair<std::string, const nlohmann::json>> &output) {
-    if (prefix.find_first_not_of("abcdefghijklmnopqrstuvwxyz._012345678") != std::string::npos) {
-        SYLAR_LOG_ERROR(SYLAR_LOG_ROOT()) << "Config invalid name: " << prefix << " : " << node;
-        return;
-    }
-    output.push_back(std::make_pair(prefix, node));
-    if (node.is_object()) {
-        for (auto &it : node.items()) {
-            ListAllMember(prefix.empty() ? it.key() : prefix + "." + it.key(), it.value(), output);
-        }
-    }
-}
-
-void Config::LoadFromJson(const std::string &file) {
-    std::ifstream jsf(file);
-    nlohmann::json root;
-    jsf >> root;
-    std::list<std::pair<std::string, const nlohmann::json>> all_nodes;
-    ListAllMember("", root, all_nodes);
-    for (auto &i : all_nodes) {
-        std::string key = i.first;
-        if (key.empty()) continue;
-        std::transform(key.begin(), key.end(), key.begin(), ::tolower);
-        ConfigVarBase::ptr var = LookupBase(key);
-        if (var) {
-            var->fromJson(i.second);
-        }
-    }
-}
-
-Config::ConfigVarMap Config::s_datas;
 
 } // namespace sylar
 
